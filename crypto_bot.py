@@ -8,19 +8,17 @@ from flask import Flask, request, jsonify
 import threading
 from deep_translator import GoogleTranslator
 import urllib.parse
-from openai import OpenAI
+import openai
 
 app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 last_update_id = 0
 
-# Настройка DeepSeek
+# Настройка DeepSeek (старый API формат)
 if DEEPSEEK_API_KEY:
-    deepseek_client = OpenAI(
-        api_key=DEEPSEEK_API_KEY,
-        base_url="https://api.deepseek.com/v1"
-    )
+    openai.api_key = DEEPSEEK_API_KEY
+    openai.api_base = "https://api.deepseek.com/v1"
     DEEPSEEK_AVAILABLE = True
     print("✅ DeepSeek API подключен")
 else:
@@ -62,13 +60,6 @@ def clean_html(raw):
     return re.sub(r'<.*?>', '', raw)
 
 def calculate_importance(title, description):
-    """
-    Оценка важности новости (от 1 до 10):
-    - Базовый вес: 5
-    +2 за ключевые слова высокой важности
-    +1 за ключевые слова средней важности
-    +1 за упоминание Bitcoin или Ethereum
-    """
     text = (title + " " + description).lower()
     score = 5
     for kw in IMPORTANCE_KEYWORDS["high"]:
@@ -94,7 +85,7 @@ def translate_text(text):
         return text
 
 def analyze_with_deepseek(title, content):
-    """Анализирует новость с помощью DeepSeek AI"""
+    """Анализирует новость с помощью DeepSeek AI (старый API)"""
     if not DEEPSEEK_AVAILABLE:
         return ""
 
@@ -108,7 +99,7 @@ def analyze_with_deepseek(title, content):
 💡 Суть: (одно предложение)
 📊 Влияние: (позитивное/негативное/нейтральное)"""
 
-        response = deepseek_client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
@@ -120,7 +111,6 @@ def analyze_with_deepseek(title, content):
         return ""
 
 def extract_image_from_article(link):
-    """Пытается найти картинку на странице новости"""
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(link, timeout=15, headers=headers)
@@ -142,7 +132,6 @@ def extract_image_from_article(link):
     return None
 
 def generate_ai_image(title):
-    """Генерирует картинку через бесплатный API Pollinations.ai"""
     try:
         prompt = f"crypto news, {title[:100]}"
         encoded_prompt = urllib.parse.quote(prompt)
@@ -154,7 +143,6 @@ def generate_ai_image(title):
     except Exception as e:
         print(f"Ошибка генерации AI картинки: {e}")
 
-    # Резервные тематические картинки
     theme_images = {
         "bitcoin": "https://i.imgur.com/8qD4q4M.png",
         "ethereum": "https://i.imgur.com/Kp4zq8Z.png",
@@ -176,14 +164,12 @@ def generate_ai_image(title):
         return theme_images["default"]
 
 def get_news_image(link, title):
-    """Основная функция получения картинки для новости"""
     image_url = extract_image_from_article(link)
     if not image_url:
         image_url = generate_ai_image(title)
     return image_url
 
 def fetch_news(feed_list, limit=5, source_name="main"):
-    """Универсальная функция получения новостей с картинками"""
     articles = []
     cutoff = datetime.now(timezone.utc) - timedelta(hours=36)
 
@@ -251,7 +237,6 @@ def fetch_news(feed_list, limit=5, source_name="main"):
     return unique[:limit]
 
 def send_photo(chat_id, image_url, caption):
-    """Отправляет фото с подписью"""
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
         payload = {
@@ -283,7 +268,6 @@ def send_message(chat_id, text, parse_mode="Markdown"):
         print(f"Ошибка отправки: {e}")
 
 def send_news_with_keyboard(chat_id, feed_list, count, title_message, source_type):
-    """Отправляет новости с картинками и показывает клавиатуру"""
     send_message(chat_id, f"🔍 {title_message}\n⏳ Загружаю новости... (15-25 секунд)")
 
     news_list = fetch_news(feed_list, count, source_type)
@@ -309,7 +293,6 @@ def send_news_with_keyboard(chat_id, feed_list, count, title_message, source_typ
         caption += f"⭐ Важность: {news['importance']}/10\n\n"
         caption += f"🔗 [Читать полностью]({news['link']})"
 
-        # Добавляем анализ DeepSeek
         if DEEPSEEK_AVAILABLE:
             ai_analysis = analyze_with_deepseek(news['title'], news['desc'])
             caption += ai_analysis
@@ -344,7 +327,6 @@ def show_keyboard(chat_id):
     requests.post(url, json=payload)
 
 def keep_alive():
-    """Каждые 10 минут пингует свой health-эндпоинт, чтобы Render не усыплял бота"""
     bot_url = f"https://crypto-news-bot-v7aj.onrender.com/health"
     while True:
         time.sleep(10 * 60)
@@ -433,12 +415,10 @@ def health():
     return "OK", 200
 
 if __name__ == "__main__":
-    # Запускаем авто-пинг
     ping_thread = threading.Thread(target=keep_alive, daemon=True)
     ping_thread.start()
     print("🟢 Auto-ping активирован (каждые 10 минут)")
 
-    # Запускаем бота
     bot_thread = threading.Thread(target=bot_polling, daemon=True)
     bot_thread.start()
 
