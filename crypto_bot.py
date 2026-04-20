@@ -24,6 +24,8 @@ MAIN_FEEDS = [
     "https://decrypt.co/feed",
     "https://www.newsbtc.com/feed/",
 ]
+
+# ИСПРАВЛЕННЫЕ источники регуляторов
 REGULATOR_FEEDS = [
     "https://cointelegraph.com/rss/tag/regulation",
     "https://coindesk.com/arc/outboundfeeds/rss/category/regulation/?outputType=xml",
@@ -33,6 +35,7 @@ REGULATOR_FEEDS = [
     "https://www.sec.gov/news/pressreleases.rss",
     "https://www.cftc.gov/media/news.xml",
 ]
+
 IMPORTANCE_KEYWORDS = {
     "high": ["hack", "exploit", "etf", "lawsuit", "regulation", "ban", "legal", "arrest", "billion", "million", "sec", "cftc", "fbi", "justice", "fine", "penalty"],
     "medium": ["launch", "partnership", "upgrade", "mainnet", "airdrop", "listing", "wallet"],
@@ -89,26 +92,19 @@ def extract_image_from_article(link):
     return None
 
 def generate_ai_image(title):
-    """
-    Генерирует картинку через бесплатный API Pollinations.ai
-    На основе заголовка новости
-    """
+    """Генерирует картинку через бесплатный API Pollinations.ai"""
     try:
-        # Очищаем заголовок для промпта
         prompt = f"crypto news, {title[:100]}"
         encoded_prompt = urllib.parse.quote(prompt)
-        
-        # Pollinations.ai - бесплатный генератор картинок (не требует API ключ)
         image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=768&nologo=true"
         
-        # Проверяем, что картинка генерируется
         response = requests.head(image_url, timeout=10)
         if response.status_code == 200:
             return image_url
     except Exception as e:
         print(f"Ошибка генерации AI картинки: {e}")
     
-    # Резервные тематические картинки (если AI не сработал)
+    # Резервные тематические картинки
     theme_images = {
         "bitcoin": "https://i.imgur.com/8qD4q4M.png",
         "ethereum": "https://i.imgur.com/Kp4zq8Z.png",
@@ -131,13 +127,9 @@ def generate_ai_image(title):
 
 def get_news_image(link, title):
     """Основная функция получения картинки для новости"""
-    # Сначала пробуем найти картинку на странице
     image_url = extract_image_from_article(link)
-    
-    # Если не нашли — генерируем через AI
     if not image_url:
         image_url = generate_ai_image(title)
-    
     return image_url
 
 def fetch_news(feed_list, limit=5, source_name="main"):
@@ -169,7 +161,6 @@ def fetch_news(feed_list, limit=5, source_name="main"):
                 
                 importance = calculate_importance(title_en, desc_en)
                 
-                # Переводим важные новости
                 if importance >= 4:
                     title_ru = translate_text(title_en)
                     desc_ru = translate_text(desc_en[:400])
@@ -177,12 +168,9 @@ def fetch_news(feed_list, limit=5, source_name="main"):
                     title_ru = title_en
                     desc_ru = desc_en[:400]
                 
-                # Получаем картинку
                 image_url = None
-                # Сначала проверяем media:content в RSS
                 if 'media_content' in entry and entry.media_content:
                     image_url = entry.media_content[0].get('url')
-                # Если нет — генерируем через AI
                 if not image_url:
                     image_url = get_news_image(link, title_en)
                 
@@ -199,10 +187,8 @@ def fetch_news(feed_list, limit=5, source_name="main"):
         except Exception as e:
             print(f"Ошибка {url}: {e}")
     
-    # Сортируем по важности + дате
     articles.sort(key=lambda x: (x["importance"], x["date"]), reverse=True)
     
-    # Убираем дубликаты
     seen = set()
     unique = []
     for a in articles:
@@ -271,7 +257,6 @@ def send_news_with_keyboard(chat_id, feed_list, count, title_message, source_typ
         caption += f"⭐ Важность: {news['importance']}/10\n\n"
         caption += f"🔗 [Читать полностью]({news['link']})"
         
-        # Отправляем с картинкой (теперь она есть у каждой новости)
         if news.get("image_url"):
             send_photo(chat_id, news["image_url"], caption)
         else:
@@ -304,7 +289,7 @@ def show_keyboard(chat_id):
 def bot_polling():
     global last_update_id
     print("✅ Бот запущен с AI-генерацией картинок!")
-    print("📌 Команды: /start, /news3, /news5, /regulators")
+    print("📌 Команды: /start, /news3, /news5, /regulators, /test_regulators")
     
     while True:
         try:
@@ -330,7 +315,8 @@ def bot_polling():
                         "• `/start` — показать это меню\n"
                         "• `/news3` — топ-3 новости\n"
                         "• `/news5` — топ-5 новостей\n"
-                        "• `/regulators` — новости регуляторов\n\n"
+                        "• `/regulators` — новости регуляторов\n"
+                        "• `/test_regulators` — диагностика источников\n\n"
                         "💡 Или просто нажми на кнопки ниже!"
                     )
                     send_message(chat_id, welcome)
@@ -345,24 +331,27 @@ def bot_polling():
                 elif text == "/regulators" or text == "🏛️ Новости регуляторов":
                     send_news_with_keyboard(chat_id, REGULATOR_FEEDS, 5, "🏛️ *Новости крипторегуляторов (SEC, CFTC и др.)*", "regulators")
                 
+                elif text == "/test_regulators":
+                    send_message(chat_id, "🔍 *Тестирую источники регуляторов...*\n\nПроверяю каждый RSS-канал:")
+                    
+                    results = ""
+                    for url in REGULATOR_FEEDS:
+                        try:
+                            feed = feedparser.parse(url)
+                            count = len(feed.entries)
+                            status = "✅" if count > 0 else "⚠️"
+                            domain = url.split('/')[2] if len(url.split('/')) > 2 else url[:30]
+                            results += f"{status} {domain}... ({count} новостей)\n"
+                        except Exception as e:
+                            domain = url.split('/')[2] if len(url.split('/')) > 2 else url[:30]
+                            results += f"❌ {domain}... (ошибка)\n"
+                        time.sleep(0.3)
+                    
+                    send_message(chat_id, f"📊 *Результаты теста:*\n\n{results}\n\nТеперь попробуй /regulators снова")
+                
                 elif text == "/health":
                     send_message(chat_id, "✅ Бот работает нормально! Генерация картинок активна 🖼️")
-               
-                elif text == "/test_regulators":
-    send_message(chat_id, "🔍 *Тестирую источники регуляторов...*\n\nПроверяю каждый RSS-канал:")
-    
-    results = ""
-    for url in REGULATOR_FEEDS:
-        try:
-            feed = feedparser.parse(url)
-            count = len(feed.entries)
-            status = "✅" if count > 0 else "⚠️"
-            results += f"{status} {url.split('/')[2]}... ({count} новостей)\n"
-        except Exception as e:
-            results += f"❌ {url.split('/')[2]}... (ошибка)\n"
-        time.sleep(0.3)
-    
-    send_message(chat_id, f"📊 *Результаты теста:*\n\n{results}\n\nТеперь попробуй /regulators снова")
+                
         except Exception as e:
             print(f"Ошибка в polling: {e}")
             time.sleep(5)
