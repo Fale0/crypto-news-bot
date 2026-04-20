@@ -338,7 +338,8 @@ def bot_polling():
                         "• `/news5` — топ-5 новостей\n"
                         "• `/regulators` — новости регуляторов\n\n"
                         "⏰ Новости только за последние 36 часов\n"
-                        "🕒 Время указано московское (МСК)\n\n"
+                        "🕒 Время указано московское (МСК)\n"
+                        "♻️ *Бот работает 24/7 (авто-пинг каждые 10 минут)*\n\n"
                         "💡 Нажми на кнопки ниже!"
                     )
                     send_message(chat_id, welcome)
@@ -354,15 +355,30 @@ def bot_polling():
                     send_news_with_keyboard(chat_id, REGULATOR_FEEDS, 8, "🏛️ *Новости крипторегуляторов (SEC, CFTC и др.)*", "regulators")
                 
                 elif text == "/health":
-                    send_message(chat_id, "✅ Бот работает нормально!\n🕒 Московское время\n📅 Новости за 36 часов")
+                    send_message(chat_id, "✅ Бот работает нормально!\n🕒 Московское время\n📅 Новости за 36 часов\n♻️ Авто-пинг активен")
                 
         except Exception as e:
             print(f"Ошибка в polling: {e}")
             time.sleep(5)
 
+# ==================== ФУНКЦИЯ АВТО-ПИНГА (ХОЛОДНОЕ ПРОБУЖДЕНИЕ) ====================
+def keep_alive():
+    """
+    Каждые 10 минут пингует свой health-эндпоинт,
+    чтобы Render не усыплял бота
+    """
+    bot_url = f"https://crypto-news-bot-v7aj.onrender.com/health"
+    while True:
+        time.sleep(10 * 60)  # 10 минут
+        try:
+            response = requests.get(bot_url, timeout=10)
+            print(f"🔄 Auto-ping: статус {response.status_code}")
+        except Exception as e:
+            print(f"❌ Auto-ping ошибка: {e}")
+
 @app.route('/')
 def index():
-    return "🤖 Криптоновостной бот v5.0 работает!"
+    return "🤖 Криптоновостной бот v5.0 работает! (с авто-пингом)"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -379,7 +395,14 @@ def health():
     return "OK", 200
 
 if __name__ == "__main__":
+    # Запускаем авто-пинг в отдельном потоке (чтобы бот не засыпал)
+    ping_thread = threading.Thread(target=keep_alive, daemon=True)
+    ping_thread.start()
+    print("🟢 Auto-ping активирован (каждые 10 минут)")
+    
+    # Запускаем бота
     bot_thread = threading.Thread(target=bot_polling, daemon=True)
     bot_thread.start()
+    
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
