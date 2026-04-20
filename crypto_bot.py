@@ -8,6 +8,50 @@ from flask import Flask, request, jsonify
 import threading
 from deep_translator import GoogleTranslator
 import urllib.parse
+# Импортируем библиотеку OpenAI
+from openai import OpenAI
+
+# --- Функция для анализа новости DeepSeek ---
+def analyze_news_with_deepseek(title, content):
+    """
+    Отправляет заголовок и текст новости в DeepSeek
+    и возвращает краткий анализ на русском языке.
+    """
+    # Проверяем, есть ли ключ в окружении
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        return ""
+
+    try:
+        # Создаём клиент, указывая базовый URL DeepSeek
+        client = OpenAI(
+            api_key=os.environ.get("DEEPSEEK_API_KEY"),
+            base_url="https://api.deepseek.com/v1"
+        )
+
+        # Задаём "инструкцию" для DeepSeek, что именно он должен сделать
+        prompt = f"""
+Ты — опытный крипто-аналитик. Проанализируй эту новость и дай краткий вывод.
+
+Заголовок: {title}
+Содержание: {content[:500]}
+
+Твой ответ должен быть на русском языке и состоять из двух частей:
+1. Суть новости (одно предложение).
+2. Потенциальное влияние на рынок (позитивное, негативное или нейтральное).
+"""
+        # Отправляем запрос к DeepSeek
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=200
+        )
+        # Возвращаем ответ от ИИ
+        return f"\n\n🤖 *Анализ DeepSeek:*\n{response.choices[0].message.content}"
+
+    except Exception as e:
+        print(f"Ошибка при вызове DeepSeek API: {e}")
+        return ""
 
 app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -269,6 +313,12 @@ def send_news_with_keyboard(chat_id, feed_list, count, title_message, source_typ
             imp_emoji = "⚪📰"
         
         caption = f"{imp_emoji} *{idx}. {news['title']}*\n\n"
+        # --- ДОБАВЬТЕ ЭТИ СТРОКИ ---
+# Получаем анализ от DeepSeek
+deepseek_analysis = analyze_news_with_deepseek(news['title'], news['desc'])
+caption += deepseek_analysis
+# --- КОНЕЦ БЛОКА ДОБАВЛЕНИЙ ---
+
         caption += f"📝 {news['desc']}\n\n"
         caption += f"📅 {news['date']} (МСК) | 📰 {news['source']}\n"
         caption += f"⭐ Важность: {news['importance']}/10\n\n"
