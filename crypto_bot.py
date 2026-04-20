@@ -7,52 +7,77 @@ import requests
 from flask import Flask, request, jsonify
 import threading
 from deep_translator import GoogleTranslator
+from collections import Counter
+import random
 
 app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 last_update_id = 0
 
-# Создаём переводчик (один раз при запуске)
 translator = GoogleTranslator(source='en', target='ru')
 
-RSS_FEEDS = [
-    "https://cointelegraph.com/rss",
-    "https://www.coindesk.com/arc/outboundfeeds/rss/",
-]
+# ==================== РАСШИРЕННЫЕ ИСТОЧНИКИ ====================
+RSS_FEEDS = {
+    "main": [
+        "https://cointelegraph.com/rss",
+        "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "https://cryptopotato.com/feed/",
+        "https://bitcoinmagazine.com/feeds/news",
+        "https://decrypt.co/feed",
+        "https://www.newsbtc.com/feed/",
+        "https://zycrypto.com/feed/",
+        "https://beincrypto.com/feed/",
+    ],
+    "regulators": [
+        "https://www.sec.gov/news/pressreleases.rss",  # SEC
+        "https://www.cftc.gov/media/news.xml",        # CFTC
+        "https://www.esma.europa.eu/press-news/rss.xml", # ESMA
+        "https://www.bis.org/rss/all.rss.xml",        # Банк международных расчётов
+    ]
+}
 
-def clean_html(raw_html):
-    """Удаляет HTML-теги из текста"""
-    clean = re.compile(r'<.*?>')
-    return re.sub(clean, '', raw_html)
+# Ключевые слова для определения важности
+IMPORTANCE_KEYWORDS = {
+    "high": ["hack", "exploit", "etf", "lawsuit", "regulation", "ban", "legal", "arrest", "billion", "million"],
+    "medium": ["launch", "partnership", "upgrade", "mainnet", "airdrop", "listing", "wallet"],
+    "low": ["update", "community", "event", "podcast", "interview", "ama"]
+}
 
-def translate_text(text):
-    """
-    Переводит текст с английского на русский.
-    Если перевод не удался, возвращает оригинал.
-    """
-    if not text or len(text.strip()) < 5:
-        return text
+def clean_html(raw):
+    return re.sub(r'<.*?>', '', raw)
+
+def calculate_importance(title, description):
+    """Оценивает важность новости от 1 до 10"""
+    text = (title + " " + description).lower()
+    score = 5  # базовая важность
     
-    try:
-        # Ограничиваем длину (Google Translate имеет лимит ~5000 символов)
-        text_to_translate = text[:4000] if len(text) > 4000 else text
-        translated = translator.translate(text_to_translate)
-        return translated
-    except Exception as e:
-        print(f"Ошибка перевода: {e}")
-        return text
+    for kw in IMPORTANCE_KEYWORDS["high"]:
+        if kw in text:
+            score += 2
+    for kw in IMPORTANCE_KEYWORDS["medium"]:
+        if kw in text:
+            score += 1
+    # Бонус за упоминание крупных криптовалют
+    if "bitcoin" in text or "btc" in text:
+        score += 1
+    if "ethereum" in text or "eth" in text:
+        score += 1
+    if "solana" in text or "sol" in text:
+        score += 0.5
+    
+    return min(10, max(1, score))
 
-def fetch_crypto_news():
-    """Получает новости, переводит их на русский и возвращает список"""
+def fetch_news(source_type="main", limit=10):
+    """Получает новости из указанного источника"""
     articles = []
-    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=2)
     
-    for url in RSS_FEEDS:
+    for url in RSS_FEEDS.get(source_type, []):
         try:
             print(f"Загружаю: {url}")
             feed = feedparser.parse(url)
             
-            for entry in feed.entries[:10]:
+            for entry in feed.entries[:15]:
                 pub = entry.get("published_parsed")
                 if not pub:
                     continue
@@ -65,42 +90,34 @@ def fetch_crypto_news():
                 if pub_dt < cutoff:
                     continue
                 
-                # Получаем оригинальные данные
                 title_en = entry.get("title", "Без заголовка")
                 desc_en = clean_html(entry.get("description", "Нет описания"))[:500]
                 link = entry.get("link", "#")
                 
-                print(f"Перевожу: {title_en[:50]}...")
+                importance = calculate_importance(title_en, desc_en)
                 
-                # Переводим на русский
-                title_ru = translate_text(title_en)
-                desc_ru = translate_text(desc_en)
-                
-                # Ищем изображение
-                image_url = None
-                if 'media_content' in entry and entry.media_content:
-                    image_url = entry.media_content[0].get('url')
-                elif 'links' in entry:
-                    for link_obj in entry.links:
-                        if link_obj.get('type', '').startswith('image/'):
-                            image_url = link_obj.get('href')
-                            break
+                # Переводим только важные новости для экономии времени
+                if importance >= 4:
+                    title_ru = translator.translate(title_en)
+                    desc_ru = translator.translate(desc_en[:400])
+                else:
+                    title_ru = title_en
+                    desc_ru = desc_en[:400]
                 
                 articles.append({
                     "title": title_ru,
                     "title_en": title_en,
                     "link": link,
                     "desc": desc_ru[:350],
-                    "desc_en": desc_en[:350],
                     "date": pub_dt.strftime("%d.%m.%Y %H:%M"),
                     "source": feed.feed.get("title", url.split("/")[2]),
-                    "image_url": image_url
+                    "importance": importance
                 })
         except Exception as e:
-            print(f"Ошибка загрузки {url}: {e}")
+            print(f"Ошибка {url}: {e}")
     
-    # Сортируем по дате
-    articles.sort(key=lambda x: x["date"], reverse=True)
+    # Сортируем по важности + свежести
+    articles.sort(key=lambda x: (x["importance"], x["date"]), reverse=True)
     
     # Убираем дубликаты
     seen = set()
@@ -110,62 +127,73 @@ def fetch_crypto_news():
             seen.add(a["title"])
             unique.append(a)
     
-    return unique[:3]
+    return unique[:limit]
 
-def send_photo(chat_id, image_url, caption):
-    """Отправляет фото с подписью"""
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-        payload = {
-            "chat_id": chat_id,
-            "photo": image_url,
-            "caption": caption,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": False
-        }
-        response = requests.post(url, json=payload, timeout=30)
-        if response.status_code != 200:
-            send_message(chat_id, caption)
-    except Exception as e:
-        print(f"Ошибка отправки фото: {e}")
-        send_message(chat_id, caption)
+def format_news_message(news, index):
+    """Форматирует новость с учётом важности"""
+    # Эмодзи важности
+    if news["importance"] >= 8:
+        importance_emoji = "🔴🔥"
+    elif news["importance"] >= 6:
+        importance_emoji = "🟠⚠️"
+    elif news["importance"] >= 4:
+        importance_emoji = "🟡📌"
+    else:
+        importance_emoji = "⚪📰"
+    
+    message = f"{importance_emoji} *{index}. {news['title']}*\n\n"
+    message += f"📝 {news['desc']}\n\n"
+    message += f"📅 {news['date']} | 📰 {news['source']}\n"
+    message += f"⭐ Важность: {news['importance']}/10\n\n"
+    message += f"🔗 [Читать полностью]({news['link']})"
+    
+    return message
 
-def send_message(chat_id, text):
-    """Отправляет текстовое сообщение"""
+def send_message(chat_id, text, parse_mode="Markdown"):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": "Markdown",
+            "parse_mode": parse_mode,
             "disable_web_page_preview": True
         }
         requests.post(url, json=payload, timeout=30)
     except Exception as e:
         print(f"Ошибка отправки: {e}")
 
-def format_news_message(news, index):
-    """Форматирует новость в красивое сообщение"""
-    emojis = ["🔥", "📈", "💎", "🚀", "💰", "⚡️", "🎯", "🏆"]
-    emoji = emojis[(index - 1) % len(emojis)]
+def send_news(chat_id, source_type, count, custom_text=None):
+    """Отправляет новости из указанного источника"""
+    send_message(chat_id, f"🔍 *Ищу новости...*\n📂 Источник: {source_type}\n⏳ Подождите 10-20 секунд.")
     
-    message = f"{emoji} *[{index}] {news['title']}*\n\n"
-    message += f"📝 {news['desc']}\n\n"
-    message += f"📅 *Дата:* {news['date']}\n"
-    message += f"📰 *Источник:* {news['source']}\n\n"
-    message += f"🔗 [Читать полностью]({news['link']})"
+    news_list = fetch_news(source_type, count)
     
-    # Показываем оригинал только если он сильно отличается
-    if news['title_en'] and news['title_en'].lower() != news['title'].lower():
-        message += f"\n\n_🌐 Оригинал: {news['title_en']}_"
+    if not news_list:
+        send_message(chat_id, "😕 *Новости не найдены*\n\nПопробуйте позже.")
+        return
     
-    return message
+    if custom_text:
+        send_message(chat_id, custom_text)
+    
+    for idx, news in enumerate(news_list, 1):
+        message = format_news_message(news, idx)
+        send_message(chat_id, message)
+        time.sleep(0.5)
+    
+    send_message(chat_id, f"✅ *Готово!* Показано {len(news_list)} новостей.")
+
+def create_keyboard():
+    """Создаёт клавиатуру с кнопками"""
+    keyboard = [
+        ["📰 Топ-3 новости", "📚 Топ-5 новостей"],
+        ["🏦 Новости регуляторов"]
+    ]
+    return {"keyboard": keyboard, "resize_keyboard": True, "one_time_keyboard": False}
 
 def bot_polling():
-    """Основной цикл бота"""
     global last_update_id
-    print("✅ Бот запущен и ожидает команды /news")
-    print("🌐 Переводчик настроен (английский → русский)")
+    print("✅ Бот запущен!")
+    print("📌 Доступные команды: /start, /menu, /news3, /news5, /regulators")
     
     while True:
         try:
@@ -179,54 +207,57 @@ def bot_polling():
                 chat_id = msg.get("chat", {}).get("id")
                 text = msg.get("text", "")
                 
+                # Обработка команд
                 if text == "/start":
                     welcome = (
-                        "🤖 *Криптоновостной бот*\n\n"
-                        "📰 Я собираю главные новости из мира криптовалют "
-                        "и **перевожу их на русский язык**.\n\n"
+                        "🤖 *Криптоновостной бот v2.0*\n\n"
+                        "📊 *Что умею:*\n"
+                        "• Собираю новости из 8+ источников\n"
+                        "• Оцениваю важность (от 1 до 10)\n"
+                        "• Перевожу на русский\n\n"
                         "📌 *Команды:*\n"
-                        "• `/news` — получить 3 главные новости\n"
-                        "• `/start` — показать это сообщение\n\n"
-                        "💡 *Совет:* новости приходят с картинками, "
-                        "если они доступны в источнике."
+                        "• `/menu` — показать кнопки\n"
+                        "• `/news3` — топ-3 новости\n"
+                        "• `/news5` — топ-5 новостей\n"
+                        "• `/regulators` — новости регуляторов\n\n"
+                        "💡 Или просто нажми на кнопки в меню!"
                     )
                     send_message(chat_id, welcome)
+                    send_message(chat_id, "🔽 Нажми на кнопку 'Меню' внизу экрана", parse_mode=None)
                     
-                elif text == "/news":
-                    send_message(chat_id, "🔍 *Ищу свежие новости...*\n⏳ Это может занять 10-15 секунд.")
+                elif text == "/menu":
+                    keyboard = create_keyboard()
+                    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                    payload = {
+                        "chat_id": chat_id,
+                        "text": "📱 *Выбери действие:*",
+                        "reply_markup": keyboard,
+                        "parse_mode": "Markdown"
+                    }
+                    requests.post(url, json=payload)
                     
-                    news_list = fetch_crypto_news()
+                elif text == "/news3" or text == "📰 Топ-3 новости":
+                    send_news(chat_id, "main", 3, "📊 *Топ-3 самые важные новости:*\n")
                     
-                    if not news_list:
-                        send_message(chat_id, "😕 *Новости не найдены*\n\nПопробуйте позже.")
-                    else:
-                        send_message(chat_id, f"✅ *Найдено {len(news_list)} новостей!*\n🔄 Перевожу на русский...")
-                        
-                        for idx, news in enumerate(news_list, 1):
-                            caption = format_news_message(news, idx)
-                            
-                            if news.get("image_url"):
-                                send_photo(chat_id, news["image_url"], caption)
-                            else:
-                                send_message(chat_id, caption)
-                            
-                            time.sleep(0.5)
-                        
-                        send_message(chat_id, "🚀 *Это 3 главные новости криптомира!*")
-                        
+                elif text == "/news5" or text == "📚 Топ-5 новостей":
+                    send_news(chat_id, "main", 5, "📊 *Топ-5 самых важных новостей:*\n")
+                    
+                elif text == "/regulators" or text == "🏦 Новости регуляторов":
+                    send_news(chat_id, "regulators", 5, "🏛️ *Новости крипторегуляторов:*\n")
+                    
         except Exception as e:
             print(f"Ошибка в polling: {e}")
             time.sleep(5)
 
 @app.route('/')
 def index():
-    return "🤖 Криптоновостной бот работает! Отправьте /news в Telegram."
+    return "🤖 Криптоновостной бот v2.0 работает! Отправьте /start в Telegram."
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
         update = request.get_json()
-        print(f"Webhook received: {update}")
+        print(f"Webhook: {update}")
         return jsonify({"ok": True})
     except Exception as e:
         print(f"Ошибка webhook: {e}")
