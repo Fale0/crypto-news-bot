@@ -24,15 +24,15 @@ MAIN_FEEDS = [
     "https://decrypt.co/feed",
     "https://www.newsbtc.com/feed/",
 ]
-
 REGULATOR_FEEDS = [
     "https://cointelegraph.com/rss/tag/regulation",
-    "https://www.coindesk.com/arc/outboundfeeds/rss/category/regulation/",
-    "https://cryptopotato.com/category/regulation/feed/",
+    "https://coindesk.com/arc/outboundfeeds/rss/category/regulation/?outputType=xml",
+    "https://cryptonews.com/news/regulation/feed/",
     "https://cointelegraph.com/rss/tag/sec",
     "https://cointelegraph.com/rss/tag/cftc",
+    "https://www.sec.gov/news/pressreleases.rss",
+    "https://www.cftc.gov/media/news.xml",
 ]
-
 IMPORTANCE_KEYWORDS = {
     "high": ["hack", "exploit", "etf", "lawsuit", "regulation", "ban", "legal", "arrest", "billion", "million", "sec", "cftc", "fbi", "justice", "fine", "penalty"],
     "medium": ["launch", "partnership", "upgrade", "mainnet", "airdrop", "listing", "wallet"],
@@ -347,7 +347,22 @@ def bot_polling():
                 
                 elif text == "/health":
                     send_message(chat_id, "✅ Бот работает нормально! Генерация картинок активна 🖼️")
-                
+               
+                elif text == "/test_regulators":
+    send_message(chat_id, "🔍 *Тестирую источники регуляторов...*\n\nПроверяю каждый RSS-канал:")
+    
+    results = ""
+    for url in REGULATOR_FEEDS:
+        try:
+            feed = feedparser.parse(url)
+            count = len(feed.entries)
+            status = "✅" if count > 0 else "⚠️"
+            results += f"{status} {url.split('/')[2]}... ({count} новостей)\n"
+        except Exception as e:
+            results += f"❌ {url.split('/')[2]}... (ошибка)\n"
+        time.sleep(0.3)
+    
+    send_message(chat_id, f"📊 *Результаты теста:*\n\n{results}\n\nТеперь попробуй /regulators снова")
         except Exception as e:
             print(f"Ошибка в polling: {e}")
             time.sleep(5)
