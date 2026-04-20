@@ -7,6 +7,8 @@ import requests
 from flask import Flask, request, jsonify
 import threading
 from deep_translator import GoogleTranslator
+from io import BytesIO
+import random
 
 app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -15,7 +17,6 @@ last_update_id = 0
 translator = GoogleTranslator(source='en', target='ru')
 
 # ==================== ИСТОЧНИКИ НОВОСТЕЙ ====================
-# Основные крипто-новости
 MAIN_FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
@@ -25,7 +26,6 @@ MAIN_FEEDS = [
     "https://www.newsbtc.com/feed/",
 ]
 
-# Новости регуляторов (специальные разделы)
 REGULATOR_FEEDS = [
     "https://cointelegraph.com/rss/tag/regulation",
     "https://www.coindesk.com/arc/outboundfeeds/rss/category/regulation/",
@@ -34,10 +34,19 @@ REGULATOR_FEEDS = [
     "https://cointelegraph.com/rss/tag/cftc",
 ]
 
-# Ключевые слова для оценки важности
 IMPORTANCE_KEYWORDS = {
     "high": ["hack", "exploit", "etf", "lawsuit", "regulation", "ban", "legal", "arrest", "billion", "million", "sec", "cftc", "fbi", "justice", "fine", "penalty"],
     "medium": ["launch", "partnership", "upgrade", "mainnet", "airdrop", "listing", "wallet"],
+}
+
+# Эмодзи для генерации картинок (по теме новости)
+TOPIC_EMOJIS = {
+    "bitcoin": "🟠 ₿",
+    "ethereum": "💎 Ξ",
+    "regulation": "⚖️ 📜",
+    "hack": "💀 🔓",
+    "etf": "📈 💼",
+    "default": "📰 🪙"
 }
 
 def clean_html(raw):
@@ -68,8 +77,73 @@ def translate_text(text):
         print(f"Ошибка перевода: {e}")
         return text
 
+def extract_image_from_article(link):
+    """Пытается найти картинку на странице новости"""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(link, timeout=15, headers=headers)
+        
+        # Ищем meta-теги с картинками
+        patterns = [
+            r'<meta[^>]*property="og:image"[^>]*content="([^"]+)"',
+            r'<meta[^>]*name="twitter:image"[^>]*content="([^"]+)"',
+            r'<img[^>]*src="([^"]+)"[^>]*class="[^"]*featured[^"]*"',
+            r'<img[^>]*src="([^"]+\.(jpg|png|jpeg|webp))"[^>]*>'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, response.text, re.IGNORECASE)
+            if match:
+                img_url = match.group(1)
+                if img_url.startswith('http'):
+                    return img_url
+    except Exception as e:
+        print(f"Ошибка извлечения картинки: {e}")
+    return None
+
+def generate_fallback_image(title):
+    """Генерирует простую картинку-заглушку с текстом"""
+    try:
+        # Определяем тему новости
+        topic = "default"
+        title_lower = title.lower()
+        if "bitcoin" in title_lower or "btc" in title_lower:
+            topic = "bitcoin"
+        elif "ethereum" in title_lower or "eth" in title_lower:
+            topic = "ethereum"
+        elif "regul" in title_lower or "sec" in title_lower or "cftc" in title_lower:
+            topic = "regulation"
+        elif "hack" in title_lower or "exploit" in title_lower:
+            topic = "hack"
+        elif "etf" in title_lower:
+            topic = "etf"
+        
+        # Используем бесплатный API для генерации картинки (Placeholder)
+        emoji = TOPIC_EMOJIS.get(topic, TOPIC_EMOJIS["default"])
+        encoded_title = title[:50].replace(" ", "%20")
+        
+        # Используем сервис placekitten для простой картинки
+        # Или можно использовать pollinations.ai для генерации
+        img_url = f"https://placekitten.com/800/400?text={encoded_title[:30]}"
+        
+        return img_url
+    except Exception as e:
+        print(f"Ошибка генерации картинки: {e}")
+        return None
+
+def get_news_image(link, title):
+    """Основная функция получения картинки для новости"""
+    # Сначала пробуем найти картинку на странице
+    image_url = extract_image_from_article(link)
+    
+    # Если не нашли — генерируем заглушку
+    if not image_url:
+        image_url = generate_fallback_image(title)
+    
+    return image_url
+
 def fetch_news(feed_list, limit=5, source_name="main"):
-    """Универсальная функция получения новостей"""
+    """Универсальная функция получения новостей с картинками"""
     articles = []
     cutoff = datetime.now(timezone.utc) - timedelta(days=3)
     
@@ -105,6 +179,15 @@ def fetch_news(feed_list, limit=5, source_name="main"):
                     title_ru = title_en
                     desc_ru = desc_en[:400]
                 
+                # Получаем картинку
+                image_url = None
+                # Сначала проверяем media:content в RSS
+                if 'media_content' in entry and entry.media_content:
+                    image_url = entry.media_content[0].get('url')
+                # Если нет — ищем на странице
+                if not image_url:
+                    image_url = get_news_image(link, title_en)
+                
                 articles.append({
                     "title": title_ru,
                     "title_en": title_en,
@@ -112,7 +195,8 @@ def fetch_news(feed_list, limit=5, source_name="main"):
                     "desc": desc_ru[:350],
                     "date": pub_dt.strftime("%d.%m.%Y %H:%M"),
                     "source": feed.feed.get("title", url.split("/")[2]),
-                    "importance": importance
+                    "importance": importance,
+                    "image_url": image_url
                 })
         except Exception as e:
             print(f"Ошибка {url}: {e}")
@@ -130,6 +214,25 @@ def fetch_news(feed_list, limit=5, source_name="main"):
     
     return unique[:limit]
 
+def send_photo(chat_id, image_url, caption):
+    """Отправляет фото с подписью"""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+        payload = {
+            "chat_id": chat_id,
+            "photo": image_url,
+            "caption": caption,
+            "parse_mode": "Markdown"
+        }
+        response = requests.post(url, json=payload, timeout=30)
+        
+        # Если фото не отправилось (битая ссылка), отправляем только текст
+        if response.status_code != 200:
+            send_message(chat_id, caption)
+    except Exception as e:
+        print(f"Ошибка отправки фото: {e}")
+        send_message(chat_id, caption)
+
 def send_message(chat_id, text, parse_mode="Markdown"):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -144,7 +247,7 @@ def send_message(chat_id, text, parse_mode="Markdown"):
         print(f"Ошибка отправки: {e}")
 
 def send_news_with_keyboard(chat_id, feed_list, count, title_message, source_type):
-    """Отправляет новости и показывает клавиатуру"""
+    """Отправляет новости с картинками и показывает клавиатуру"""
     send_message(chat_id, f"🔍 {title_message}\n⏳ Загружаю новости... (10-20 секунд)")
     
     news_list = fetch_news(feed_list, count, source_type)
@@ -164,20 +267,24 @@ def send_news_with_keyboard(chat_id, feed_list, count, title_message, source_typ
         else:
             imp_emoji = "⚪📰"
         
-        message = f"{imp_emoji} *{idx}. {news['title']}*\n\n"
-        message += f"📝 {news['desc']}\n\n"
-        message += f"📅 {news['date']} | 📰 {news['source']}\n"
-        message += f"⭐ Важность: {news['importance']}/10\n\n"
-        message += f"🔗 [Читать полностью]({news['link']})"
+        caption = f"{imp_emoji} *{idx}. {news['title']}*\n\n"
+        caption += f"📝 {news['desc']}\n\n"
+        caption += f"📅 {news['date']} | 📰 {news['source']}\n"
+        caption += f"⭐ Важность: {news['importance']}/10\n\n"
+        caption += f"🔗 [Читать полностью]({news['link']})"
         
-        send_message(chat_id, message)
+        # Отправляем с картинкой, если она есть
+        if news.get("image_url"):
+            send_photo(chat_id, news["image_url"], caption)
+        else:
+            send_message(chat_id, caption)
+        
         time.sleep(0.5)
     
     send_message(chat_id, f"✅ *Готово!* Показано {len(news_list)} новостей.")
     show_keyboard(chat_id)
 
 def show_keyboard(chat_id):
-    """Показывает клавиатуру с кнопками"""
     keyboard = {
         "keyboard": [
             ["📰 Топ-3 новости", "📚 Топ-5 новостей"],
@@ -198,9 +305,8 @@ def show_keyboard(chat_id):
 
 def bot_polling():
     global last_update_id
-    print("✅ Бот запущен!")
+    print("✅ Бот запущен с поддержкой картинок!")
     print("📌 Команды: /start, /news3, /news5, /regulators")
-    print("🔘 Кнопки появятся после /start или любого действия")
     
     while True:
         try:
@@ -214,14 +320,14 @@ def bot_polling():
                 chat_id = msg.get("chat", {}).get("id")
                 text = msg.get("text", "")
                 
-                # Обработка команд и кнопок
                 if text == "/start":
                     welcome = (
-                        "🤖 *Криптоновостной бот v3.0*\n\n"
+                        "🤖 *Криптоновостной бот v3.1* 🖼️\n\n"
                         "📊 *Что умею:*\n"
                         "• Собираю новости из 10+ источников\n"
                         "• Оцениваю важность (от 1 до 10)\n"
-                        "• Перевожу на русский\n\n"
+                        "• Перевожу на русский\n"
+                        "• **Добавляю картинки к новостям** 🖼️\n\n"
                         "📌 *Команды:*\n"
                         "• `/start` — показать это меню\n"
                         "• `/news3` — топ-3 новости\n"
@@ -230,9 +336,6 @@ def bot_polling():
                         "💡 Или просто нажми на кнопки ниже!"
                     )
                     send_message(chat_id, welcome)
-                    show_keyboard(chat_id)
-                
-                elif text == "/menu" or text == "🔘 Меню":
                     show_keyboard(chat_id)
                 
                 elif text == "/news3" or text == "📰 Топ-3 новости":
@@ -253,7 +356,7 @@ def bot_polling():
 
 @app.route('/')
 def index():
-    return "🤖 Криптоновостной бот v3.0 работает! Отправьте /start в Telegram."
+    return "🤖 Криптоновостной бот v3.1 (с картинками) работает!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
