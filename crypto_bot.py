@@ -15,6 +15,9 @@ last_update_id = 0
 
 translator = GoogleTranslator(source='en', target='ru')
 
+# Московское время (UTC+3)
+MOSCOW_TZ = timezone(timedelta(hours=3))
+
 # ==================== ИСТОЧНИКИ НОВОСТЕЙ ====================
 MAIN_FEEDS = [
     "https://cointelegraph.com/rss",
@@ -25,7 +28,6 @@ MAIN_FEEDS = [
     "https://www.newsbtc.com/feed/",
 ]
 
-# ИСПРАВЛЕННЫЕ источники регуляторов
 REGULATOR_FEEDS = [
     "https://cointelegraph.com/rss/tag/regulation",
     "https://coindesk.com/arc/outboundfeeds/rss/category/regulation/?outputType=xml",
@@ -36,6 +38,7 @@ REGULATOR_FEEDS = [
     "https://www.cftc.gov/media/news.xml",
 ]
 
+# Ключевые слова для оценки важности
 IMPORTANCE_KEYWORDS = {
     "high": ["hack", "exploit", "etf", "lawsuit", "regulation", "ban", "legal", "arrest", "billion", "million", "sec", "cftc", "fbi", "justice", "fine", "penalty"],
     "medium": ["launch", "partnership", "upgrade", "mainnet", "airdrop", "listing", "wallet"],
@@ -45,6 +48,13 @@ def clean_html(raw):
     return re.sub(r'<.*?>', '', raw)
 
 def calculate_importance(title, description):
+    """
+    Оценка важности новости (от 1 до 10):
+    - Базовый вес: 5
+    +2 за ключевые слова высокой важности (хак, иск, регуляции, ETF, SEC и т.д.)
+    +1 за ключевые слова средней важности (запуск, партнёрство, листинг)
+    +1 за упоминание Bitcoin или Ethereum
+    """
     text = (title + " " + description).lower()
     score = 5
     for kw in IMPORTANCE_KEYWORDS["high"]:
@@ -135,7 +145,8 @@ def get_news_image(link, title):
 def fetch_news(feed_list, limit=5, source_name="main"):
     """Универсальная функция получения новостей с картинками"""
     articles = []
-    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    # Новости не старше 36 часов
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=36)
     
     for url in feed_list:
         try:
@@ -147,13 +158,17 @@ def fetch_news(feed_list, limit=5, source_name="main"):
                 if not pub:
                     continue
                 
-                pub_dt = datetime.fromtimestamp(
+                pub_dt_utc = datetime.fromtimestamp(
                     datetime(*pub[:6]).timestamp(), 
                     tz=timezone.utc
                 )
                 
-                if pub_dt < cutoff:
+                # Фильтр по времени (не старше 36 часов)
+                if pub_dt_utc < cutoff:
                     continue
+                
+                # Конвертируем в московское время для отображения
+                pub_dt_msk = pub_dt_utc.astimezone(MOSCOW_TZ)
                 
                 title_en = entry.get("title", "Без заголовка")
                 desc_en = clean_html(entry.get("description", "Нет описания"))[:500]
@@ -179,7 +194,7 @@ def fetch_news(feed_list, limit=5, source_name="main"):
                     "title_en": title_en,
                     "link": link,
                     "desc": desc_ru[:350],
-                    "date": pub_dt.strftime("%d.%m.%Y %H:%M"),
+                    "date": pub_dt_msk.strftime("%d.%m.%Y %H:%M"),
                     "source": feed.feed.get("title", url.split("/")[2]),
                     "importance": importance,
                     "image_url": image_url
@@ -187,8 +202,10 @@ def fetch_news(feed_list, limit=5, source_name="main"):
         except Exception as e:
             print(f"Ошибка {url}: {e}")
     
+    # Сортируем по важности + дате
     articles.sort(key=lambda x: (x["importance"], x["date"]), reverse=True)
     
+    # Убираем дубликаты
     seen = set()
     unique = []
     for a in articles:
@@ -253,7 +270,7 @@ def send_news_with_keyboard(chat_id, feed_list, count, title_message, source_typ
         
         caption = f"{imp_emoji} *{idx}. {news['title']}*\n\n"
         caption += f"📝 {news['desc']}\n\n"
-        caption += f"📅 {news['date']} | 📰 {news['source']}\n"
+        caption += f"📅 {news['date']} (МСК) | 📰 {news['source']}\n"
         caption += f"⭐ Важность: {news['importance']}/10\n\n"
         caption += f"🔗 [Читать полностью]({news['link']})"
         
@@ -289,7 +306,7 @@ def show_keyboard(chat_id):
 def bot_polling():
     global last_update_id
     print("✅ Бот запущен с AI-генерацией картинок!")
-    print("📌 Команды: /start, /news3, /news5, /regulators, /test_regulators")
+    print("📌 Команды: /start, /news3, /news5, /regulators")
     
     while True:
         try:
@@ -305,19 +322,24 @@ def bot_polling():
                 
                 if text == "/start":
                     welcome = (
-                        "🤖 *Криптоновостной бот v4.0* 🖼️🤖\n\n"
+                        "🤖 *Криптоновостной бот v5.0* 🖼️\n\n"
                         "📊 *Что умею:*\n"
                         "• Собираю новости из 10+ источников\n"
-                        "• Оцениваю важность (от 1 до 10)\n"
+                        "• **Оцениваю важность** (от 1 до 10)\n"
                         "• Перевожу на русский\n"
-                        "• **Генерирую AI-картинки к каждой новости** 🎨\n\n"
+                        "• Генерирую AI-картинки\n\n"
+                        "📌 *Методология оценки важности:*\n"
+                        "• Базовая оценка: 5/10\n"
+                        "• +2 за ключевые слова: хак, иск, регуляции, ETF, SEC\n"
+                        "• +1 за партнёрства, запуски, листинги\n"
+                        "• +1 за упоминание Bitcoin или Ethereum\n\n"
                         "📌 *Команды:*\n"
-                        "• `/start` — показать это меню\n"
                         "• `/news3` — топ-3 новости\n"
                         "• `/news5` — топ-5 новостей\n"
-                        "• `/regulators` — новости регуляторов\n"
-                        "• `/test_regulators` — диагностика источников\n\n"
-                        "💡 Или просто нажми на кнопки ниже!"
+                        "• `/regulators` — новости регуляторов\n\n"
+                        "⏰ Новости только за последние 36 часов\n"
+                        "🕒 Время указано московское (МСК)\n\n"
+                        "💡 Нажми на кнопки ниже!"
                     )
                     send_message(chat_id, welcome)
                     show_keyboard(chat_id)
@@ -329,28 +351,10 @@ def bot_polling():
                     send_news_with_keyboard(chat_id, MAIN_FEEDS, 5, "📊 *Топ-5 самых важных новостей криптомира*", "main")
                 
                 elif text == "/regulators" or text == "🏛️ Новости регуляторов":
-                    send_news_with_keyboard(chat_id, REGULATOR_FEEDS, 5, "🏛️ *Новости крипторегуляторов (SEC, CFTC и др.)*", "regulators")
-                
-                elif text == "/test_regulators":
-                    send_message(chat_id, "🔍 *Тестирую источники регуляторов...*\n\nПроверяю каждый RSS-канал:")
-                    
-                    results = ""
-                    for url in REGULATOR_FEEDS:
-                        try:
-                            feed = feedparser.parse(url)
-                            count = len(feed.entries)
-                            status = "✅" if count > 0 else "⚠️"
-                            domain = url.split('/')[2] if len(url.split('/')) > 2 else url[:30]
-                            results += f"{status} {domain}... ({count} новостей)\n"
-                        except Exception as e:
-                            domain = url.split('/')[2] if len(url.split('/')) > 2 else url[:30]
-                            results += f"❌ {domain}... (ошибка)\n"
-                        time.sleep(0.3)
-                    
-                    send_message(chat_id, f"📊 *Результаты теста:*\n\n{results}\n\nТеперь попробуй /regulators снова")
+                    send_news_with_keyboard(chat_id, REGULATOR_FEEDS, 8, "🏛️ *Новости крипторегуляторов (SEC, CFTC и др.)*", "regulators")
                 
                 elif text == "/health":
-                    send_message(chat_id, "✅ Бот работает нормально! Генерация картинок активна 🖼️")
+                    send_message(chat_id, "✅ Бот работает нормально!\n🕒 Московское время\n📅 Новости за 36 часов")
                 
         except Exception as e:
             print(f"Ошибка в polling: {e}")
@@ -358,7 +362,7 @@ def bot_polling():
 
 @app.route('/')
 def index():
-    return "🤖 Криптоновостной бот v4.0 (с AI-генерацией картинок) работает!"
+    return "🤖 Криптоновостной бот v5.0 работает!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
