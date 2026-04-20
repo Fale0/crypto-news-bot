@@ -15,7 +15,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 last_update_id = 0
 
-# Настройка DeepSeek (старый API формат)
+# Настройка DeepSeek (старый API формат для версии 0.28.1)
 if DEEPSEEK_API_KEY:
     openai.api_key = DEEPSEEK_API_KEY
     openai.api_base = "https://api.deepseek.com/v1"
@@ -85,7 +85,7 @@ def translate_text(text):
         return text
 
 def analyze_with_deepseek(title, content):
-    """Анализирует новость с помощью DeepSeek AI (старый API)"""
+    """Анализирует новость с помощью DeepSeek AI"""
     if not DEEPSEEK_AVAILABLE:
         return ""
 
