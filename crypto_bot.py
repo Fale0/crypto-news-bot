@@ -6,14 +6,14 @@ import time
 import requests
 from flask import Flask, request, jsonify
 import threading
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 
 app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 last_update_id = 0
 
-# Создаём переводчик
-translator = Translator()
+# Создаём переводчик (один раз при запуске)
+translator = GoogleTranslator(source='en', target='ru')
 
 RSS_FEEDS = [
     "https://cointelegraph.com/rss",
@@ -25,29 +25,22 @@ def clean_html(raw_html):
     clean = re.compile(r'<.*?>')
     return re.sub(clean, '', raw_html)
 
-def translate_text(text, max_length=4000):
+def translate_text(text):
     """
     Переводит текст с английского на русский.
-    Обрабатывает длинные тексты (разбивает на части при необходимости).
+    Если перевод не удался, возвращает оригинал.
     """
-    if not text or len(text.strip()) < 10:
+    if not text or len(text.strip()) < 5:
         return text
     
     try:
-        # Ограничиваем длину текста для перевода (API имеет лимиты)
-        text_to_translate = text[:3000] if len(text) > 3000 else text
-        
-        translated = translator.translate(text_to_translate, src='en', dest='ru')
-        result = translated.text
-        
-        # Если текст был обрезан, добавляем многоточие
-        if len(text) > 3000:
-            result += "..."
-        
-        return result
+        # Ограничиваем длину (Google Translate имеет лимит ~5000 символов)
+        text_to_translate = text[:4000] if len(text) > 4000 else text
+        translated = translator.translate(text_to_translate)
+        return translated
     except Exception as e:
         print(f"Ошибка перевода: {e}")
-        return text  # Возвращаем оригинал при ошибке
+        return text
 
 def fetch_crypto_news():
     """Получает новости, переводит их на русский и возвращает список"""
@@ -83,9 +76,9 @@ def fetch_crypto_news():
                 title_ru = translate_text(title_en)
                 desc_ru = translate_text(desc_en)
                 
-                # Ищем изображение (есть в некоторых RSS)
+                # Ищем изображение
                 image_url = None
-                if 'media_content' in entry:
+                if 'media_content' in entry and entry.media_content:
                     image_url = entry.media_content[0].get('url')
                 elif 'links' in entry:
                     for link_obj in entry.links:
@@ -120,10 +113,7 @@ def fetch_crypto_news():
     return unique[:3]
 
 def send_photo(chat_id, image_url, caption):
-    """
-    Отправляет фото с подписью.
-    Если фото недоступно, отправляет только текст.
-    """
+    """Отправляет фото с подписью"""
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
         payload = {
@@ -134,8 +124,6 @@ def send_photo(chat_id, image_url, caption):
             "disable_web_page_preview": False
         }
         response = requests.post(url, json=payload, timeout=30)
-        
-        # Если фото не отправилось (например, битая ссылка), отправляем текст
         if response.status_code != 200:
             send_message(chat_id, caption)
     except Exception as e:
@@ -154,14 +142,10 @@ def send_message(chat_id, text):
         }
         requests.post(url, json=payload, timeout=30)
     except Exception as e:
-        print(f"Ошибка отправки сообщения: {e}")
+        print(f"Ошибка отправки: {e}")
 
 def format_news_message(news, index):
-    """
-    Форматирует новость в красивое сообщение с эмодзи.
-    Возвращает строку для отправки.
-    """
-    # Эмодзи для разных типов новостей (можно расширить)
+    """Форматирует новость в красивое сообщение"""
     emojis = ["🔥", "📈", "💎", "🚀", "💰", "⚡️", "🎯", "🏆"]
     emoji = emojis[(index - 1) % len(emojis)]
     
@@ -171,16 +155,17 @@ def format_news_message(news, index):
     message += f"📰 *Источник:* {news['source']}\n\n"
     message += f"🔗 [Читать полностью]({news['link']})"
     
-    # Добавляем оригинальный заголовок для контекста (опционально)
-    if news['title_en'] and news['title_en'] != news['title']:
-        message += f"\n\n_Оригинал: {news['title_en']}_"
+    # Показываем оригинал только если он сильно отличается
+    if news['title_en'] and news['title_en'].lower() != news['title'].lower():
+        message += f"\n\n_🌐 Оригинал: {news['title_en']}_"
     
     return message
 
 def bot_polling():
     """Основной цикл бота"""
     global last_update_id
-    print("Бот запущен и ожидает команды /news")
+    print("✅ Бот запущен и ожидает команды /news")
+    print("🌐 Переводчик настроен (английский → русский)")
     
     while True:
         try:
@@ -197,8 +182,8 @@ def bot_polling():
                 if text == "/start":
                     welcome = (
                         "🤖 *Криптоновостной бот*\n\n"
-                        "Я собираю главные новости из мира криптовалют "
-                        "и перевожу их на русский язык.\n\n"
+                        "📰 Я собираю главные новости из мира криптовалют "
+                        "и **перевожу их на русский язык**.\n\n"
                         "📌 *Команды:*\n"
                         "• `/news` — получить 3 главные новости\n"
                         "• `/start` — показать это сообщение\n\n"
@@ -213,20 +198,18 @@ def bot_polling():
                     news_list = fetch_crypto_news()
                     
                     if not news_list:
-                        send_message(chat_id, "😕 *Новости не найдены*\n\nПопробуйте позже или проверьте подключение к интернету.")
+                        send_message(chat_id, "😕 *Новости не найдены*\n\nПопробуйте позже.")
                     else:
-                        send_message(chat_id, f"✅ *Найдено {len(news_list)} новостей!* Отправляю...")
+                        send_message(chat_id, f"✅ *Найдено {len(news_list)} новостей!*\n🔄 Перевожу на русский...")
                         
                         for idx, news in enumerate(news_list, 1):
                             caption = format_news_message(news, idx)
                             
-                            # Если есть изображение — отправляем с фото
                             if news.get("image_url"):
                                 send_photo(chat_id, news["image_url"], caption)
                             else:
                                 send_message(chat_id, caption)
                             
-                            # Небольшая задержка между сообщениями
                             time.sleep(0.5)
                         
                         send_message(chat_id, "🚀 *Это 3 главные новости криптомира!*")
@@ -241,7 +224,6 @@ def index():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Обработчик вебхука (если настроен)"""
     try:
         update = request.get_json()
         print(f"Webhook received: {update}")
@@ -255,9 +237,7 @@ def health():
     return "OK", 200
 
 if __name__ == "__main__":
-    # Запускаем бота в отдельном потоке
     bot_thread = threading.Thread(target=bot_polling, daemon=True)
     bot_thread.start()
-    # Запускаем веб-сервер для health check
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
